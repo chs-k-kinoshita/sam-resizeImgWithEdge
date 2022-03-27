@@ -1,6 +1,6 @@
 # 概要
 
-[Qiita記事「CloudFront＆Lambda@Edgeで画像リサイズする構成のSAMテンプレートを作成してみた」](https://github.com/chs-k-kinoshita/sam-resizeImgWithEdge)用のリソース一式です。  
+[Qiita記事「CloudFront＆Lambda@Edgeで画像リサイズする構成のSAMテンプレートを作成してみた」](https://qiita.com/Keiichi_Kinoshita/items/2a9c13dc3776577d7146)用のリソース一式です。  
 [Amazon CloudFront & Lambda@Edge で画像をリサイズする](https://aws.amazon.com/jp/blogs/news/resizing-images-with-amazon-cloudfront-lambdaedge-aws-cdn-blog/)の構成をSAMのテンプレートで一括で構築してみています。
 
 # 構築手順

@@ -1,0 +1,239 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Sample SAM Template for sam-imageresize
+
+Parameters:
+  OriginS3BucketName:
+    Type: String
+    Description: 'S3BucketName for image files.'
+  OriginS3BucketCreation:
+    Type: String 
+    Default: true
+    AllowedValues: [true, false]
+    Description: 'OriginS3Bucket is created only if the value is true.'
+  MinImageWidth:
+    Type: Number
+    Default: 50
+    Description: 'Min image size that can be specified by query parameter("w=").'
+  MaxImageWidth:
+    Type: Number
+    Default: 500
+    Description: 'Max image size that can be specified by query parameter("w=").'
+  CacheControlValue:
+    Type: String
+    Default: 'max-age=31536000'
+    Description: 'The cache-control value to set in the resized image S3Object Metadata'
+  CloudFrontPriceClass:
+    Type: String
+    Default: PriceClass_200
+    AllowedValues: [PriceClass_100, PriceClass_200, PriceClass_All]
+
+Conditions:
+  NeedOriginS3Creation: 
+    !Equals [true, !Ref OriginS3BucketCreation]
+
+Resources:
+  # CloudFront Function(ViewerRequest)
+  ViewerRequestFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: 'ImageResizeViewerFunction'
+      FunctionConfig:
+        Comment: 'Sample CloudFront Function for image resize'
+        Runtime: 'cloudfront-js-1.0'
+      AutoPublish: true
+      FunctionCode: !Sub |
+        var MIN_WIDTH = ${MinImageWidth};
+        var MAX_WIDTH = ${MaxImageWidth};
+        
+        function handler(event) {
+          var request = event.request;
+          var querystring = request.querystring;
+          var uri = request.uri;
+        
+          console.log('querystring:', querystring);
+        
+          if (!querystring['w']) {
+            // no width specified.
+            return request;
+          }
+        
+          var width = querystring['w'].value;
+          try {
+            width = parseInt(width, 10);
+          } catch (e) {
+            // failed parseInt
+            return request;
+          }
+        
+          if (!checkWidthRange(width)) {
+            return request;
+          }
+        
+          // ex: "/images/sample.png" → "/images/w100/sample.png"
+          var uriParts = uri.split('/');
+          console.log(uriParts.length);
+        
+          uriParts.splice(2, 0, 'w' + width);
+          request['uri'] = uriParts.join('/');
+        
+          return request;
+        }
+        
+        // Check if the width is within range.
+        function checkWidthRange(width) {
+          if (width > MAX_WIDTH) {
+            console.log('too large specific width:', width);
+            return false;
+          } else if (width < MIN_WIDTH) {
+            console.log('too small specific width:', width);
+            return false;
+          }
+          return true;
+        }
+
+  # Lambda@Edge Function(OriginResponse)
+  OriginResponseFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-OriginResponseFunction'
+      Runtime: nodejs14.x
+      Handler: index.handler
+      Description: 'create resized image if not exists'
+      CodeUri: 'OriginResponse/'
+      MemorySize: 512
+      Timeout: 10
+      Role: !GetAtt OriginResponseFunctionRole.Arn
+
+  OriginResponseFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-OriginResponseFunctionRole'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+            Effect: 'Allow'
+            Principal:
+              Service:
+                - 'lambda.amazonaws.com'
+                - 'edgelambda.amazonaws.com'
+            Action:
+              - 'sts:AssumeRole'
+      Path: '/service-role/'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      # inline policy
+      Policies:
+        - PolicyName: "OriginResponseFunctionRole-Policy"
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Effect: Allow
+                Resource: !Sub arn:aws:s3:::${OriginS3BucketName}/*
+              - Action: ssm:GetParameter
+                Effect: Allow
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/Sample-OriginResponseFunction-Params'
+
+  OriginS3Bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Condition: NeedOriginS3Creation
+    Properties:
+      BucketName: !Ref OriginS3BucketName
+      AccessControl: Private
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: True
+        BlockPublicPolicy: True
+        IgnorePublicAcls: True
+        RestrictPublicBuckets: True
+
+  OriginS3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref OriginS3BucketName
+      PolicyDocument:
+        Statement:
+          - Action:
+              - s3:GetObject
+            Effect: Allow
+            Resource: !Sub arn:aws:s3:::${OriginS3BucketName}/*
+            Principal:
+              AWS: !Sub arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity ${OriginAccessIdentity}
+          - Action:
+              - s3:ListBucket
+            Effect: Allow
+            Resource: !Sub arn:aws:s3:::${OriginS3BucketName}
+            Principal:
+              AWS: !Sub arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity ${OriginAccessIdentity}
+
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: "Distribution for image resise sample."
+        DefaultCacheBehavior:
+          TargetOriginId: myS3Origin
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: 'none'
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+
+        CacheBehaviors:
+          - PathPattern: images/*
+            TargetOriginId: myS3Origin
+            ForwardedValues:
+              QueryString: false
+              Cookies:
+                Forward: 'none'
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            FunctionAssociations:
+              - EventType: 'viewer-request'
+                FunctionARN: !GetAtt ViewerRequestFunction.FunctionMetadata.FunctionARN
+            LambdaFunctionAssociations:
+              - EventType: 'origin-response'
+                LambdaFunctionARN: !Ref OriginResponseFunctionVersion1
+
+        DefaultRootObject: index.html
+        Enabled: true
+        Origins:
+          - DomainName: !Sub ${OriginS3BucketName}.s3.amazonaws.com
+            Id: myS3Origin
+            S3OriginConfig:
+              OriginAccessIdentity: !Sub "origin-access-identity/cloudfront/${OriginAccessIdentity}"
+        PriceClass: !Ref CloudFrontPriceClass
+
+  OriginAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: !Ref AWS::StackName
+
+  # creates a version from the current code
+  OriginResponseFunctionVersion1:
+    Type: AWS::Lambda::Version
+    Properties:
+      FunctionName: !Ref OriginResponseFunction
+      Description: 'init version'
+
+  SSMParameterStore:
+    Type: AWS::SSM::Parameter
+    Properties: 
+      DataType: text
+      Description: 'parameters for OriginResponseFunction.'
+      Type: String
+      Name: 'Sample-OriginResponseFunction-Params'
+      Value: !Sub | 
+        {
+          "bucketName": "${OriginS3BucketName}",
+          "cacheControl": "${CacheControlValue}"
+        }
+Outputs:
+  CloudfrontDomainName:
+    Value: !GetAtt CloudFrontDistribution.DomainName

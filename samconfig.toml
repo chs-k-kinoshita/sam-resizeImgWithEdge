@@ -8,5 +8,6 @@ stack_name = "sam-sample-resizeImgWithEdge"
 s3_prefix = "sam-sample-resizeImgWithEdge"
 region = "us-east-1"
 capabilities = "CAPABILITY_NAMED_IAM"
-parameter_overrides = "OriginS3BucketName=XXXXXX OriginS3BucketCreation=false"
+# 初回構築後にスタックをアップデートする場合はOriginS3BucketCreationの指定をfalseにします
+parameter_overrides = "OriginS3BucketName=XXXXXX OriginS3BucketCreation=true"
 image_repositories = []
